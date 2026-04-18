@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const API_SECRET = process.env.BROWSER_SERVICE_SECRET || 'orbit-secret';
 
@@ -24,49 +24,42 @@ app.get('/health', (_req, res) => {
 
 app.post('/execute', async (req, res) => {
   const { task, url, steps } = req.body;
+  if (!task) { res.status(400).json({ error: 'task is required' }); return; }
 
-  if (!task) {
-    res.status(400).json({ error: 'task is required' });
-    return;
-  }
-
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-gpu-sandbox',
-      '--disable-software-rasterizer',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-sync',
-      '--disable-translate',
-      '--metrics-recording-only',
-      '--mute-audio',
-      '--no-first-run',
-      '--safebrowsing-disable-auto-update',
-      '--single-process',
-    ],
-  });
-
-  const context = await browser.newContext({
-    viewport: { width: 1024, height: 768 },
-    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-    ignoreHTTPSErrors: true,
-  });
-
-  const page = await context.newPage();
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
   const screenshots: string[] = [];
   const log: string[] = [];
 
   try {
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-zygote',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--mute-audio',
+        '--no-first-run',
+      ],
+    });
+
+    const context = await browser.newContext({
+      viewport: { width: 1024, height: 768 },
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+      ignoreHTTPSErrors: true,
+    });
+
+    const page = await context.newPage();
+
     if (url) {
       log.push(`Navigating to ${url}`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await page.waitForTimeout(2000);
-      const shot = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
+      const shot = await page.screenshot({ type: 'jpeg', quality: 60 });
       screenshots.push(shot.toString('base64'));
       log.push(`Loaded: ${await page.title()}`);
     }
@@ -85,10 +78,8 @@ app.post('/execute', async (req, res) => {
             log.push(`Navigated to ${step.url}`);
           } else if (step.action === 'wait') {
             await page.waitForTimeout(step.ms || 1000);
-            log.push(`Waited ${step.ms || 1000}ms`);
           }
-          await page.waitForTimeout(500);
-          const shot = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
+          const shot = await page.screenshot({ type: 'jpeg', quality: 60 });
           screenshots.push(shot.toString('base64'));
         } catch (stepErr) {
           log.push(`Step failed: ${(stepErr as Error).message}`);
@@ -98,18 +89,14 @@ app.post('/execute', async (req, res) => {
 
     const finalTitle = await page.title();
     const finalUrl = page.url();
-    const finalShot = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
+    const finalShot = await page.screenshot({ type: 'jpeg', quality: 60 });
     screenshots.push(finalShot.toString('base64'));
 
     await browser.close();
-    res.json({ success: true, task, finalUrl, finalTitle, screenshots, log, screenshotCount: screenshots.length });
+    res.json({ success: true, task, finalUrl, finalTitle, screenshots, log });
 
   } catch (err) {
-    try {
-      const errorShot = await page.screenshot({ type: 'jpeg', quality: 70 }).catch(() => null);
-      if (errorShot) screenshots.push(errorShot.toString('base64'));
-    } catch {}
-    await browser.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
     res.json({ success: false, task, error: (err as Error).message, screenshots, log });
   }
 });
