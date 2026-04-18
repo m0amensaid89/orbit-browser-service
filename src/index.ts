@@ -9,6 +9,7 @@ app.use(express.json());
 const API_SECRET = process.env.BROWSER_SERVICE_SECRET || 'orbit-secret';
 
 app.use((req, res, next) => {
+  if (req.path === '/health') return next();
   const auth = req.headers['x-api-secret'];
   if (auth !== API_SECRET) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -17,7 +18,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'ACTIVE', service: 'Orbit Browser Service' });
 });
 
@@ -30,12 +31,30 @@ app.post('/execute', async (req, res) => {
   }
 
   const browser = await chromium.launch({
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-gpu-sandbox',
+      '--disable-software-rasterizer',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-translate',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--safebrowsing-disable-auto-update',
+      '--single-process',
+    ],
   });
 
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    viewport: { width: 1024, height: 768 },
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    ignoreHTTPSErrors: true,
   });
 
   const page = await context.newPage();
@@ -45,9 +64,9 @@ app.post('/execute', async (req, res) => {
   try {
     if (url) {
       log.push(`Navigating to ${url}`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(1500);
-      const shot = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(2000);
+      const shot = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
       screenshots.push(shot.toString('base64'));
       log.push(`Loaded: ${await page.title()}`);
     }
@@ -62,14 +81,14 @@ app.post('/execute', async (req, res) => {
             await page.fill(step.selector, step.value, { timeout: 5000 });
             log.push(`Typed into ${step.selector}`);
           } else if (step.action === 'goto') {
-            await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
             log.push(`Navigated to ${step.url}`);
           } else if (step.action === 'wait') {
             await page.waitForTimeout(step.ms || 1000);
             log.push(`Waited ${step.ms || 1000}ms`);
           }
-          await page.waitForTimeout(800);
-          const shot = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false });
+          await page.waitForTimeout(500);
+          const shot = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
           screenshots.push(shot.toString('base64'));
         } catch (stepErr) {
           log.push(`Step failed: ${(stepErr as Error).message}`);
@@ -79,21 +98,23 @@ app.post('/execute', async (req, res) => {
 
     const finalTitle = await page.title();
     const finalUrl = page.url();
-    const finalShot = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false });
+    const finalShot = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
     screenshots.push(finalShot.toString('base64'));
 
+    await browser.close();
     res.json({ success: true, task, finalUrl, finalTitle, screenshots, log, screenshotCount: screenshots.length });
 
   } catch (err) {
-    const errorShot = await page.screenshot({ type: 'jpeg', quality: 80 }).catch(() => null);
-    if (errorShot) screenshots.push(errorShot.toString('base64'));
+    try {
+      const errorShot = await page.screenshot({ type: 'jpeg', quality: 70 }).catch(() => null);
+      if (errorShot) screenshots.push(errorShot.toString('base64'));
+    } catch {}
+    await browser.close().catch(() => {});
     res.json({ success: false, task, error: (err as Error).message, screenshots, log });
-  } finally {
-    await browser.close();
   }
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+const PORT = parseInt(process.env.PORT || '8080', 10);
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Orbit Browser Service running on port ${PORT}`);
 });
